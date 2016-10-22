@@ -836,6 +836,154 @@ def create_xml_property(name, value):
     return element
 
 
+@cli.command('xml-test-case')
+@click.option(
+    '--dry-run',
+    help='Indicate to the importer to not make any change.',
+    is_flag=True,
+)
+@click.option(
+    '--lookup-method',
+    default='custom',
+    help='Indicates to the importer which lookup method to use. "id" for work '
+    'item id, "custom" for custom id (default) or "name" for test case '
+    'title.',
+    type=click.Choice([
+        'custom',
+        'id',
+        'name',
+    ])
+)
+@click.option(
+    '--response-property',
+    callback=validate_key_value_option,
+    help='When defined, the impoter will mark all responses with the selector.'
+    'The format is "--response-property property_key=property_value".',
+)
+@click.argument('source-code-path', type=click.Path(exists=True))
+@click.argument('user')
+@click.argument('project')
+@click.argument('output-path')
+@click.pass_context
+def xml_test_case(
+        context, dry_run, lookup_method, response_property, source_code_path,
+        user, project, output_path):
+    """Generate an XML suited to be importer by the test-case importer.
+
+    This will read the source code at SOURCE_CODE_PATH in order to capture the
+    test cases and generate a XML file place at OUTPUT_PATH. The generated XML
+    file will be ready to be imported by the XML Test Case Importer.
+
+    The test cases will be created on the project ID provided by PROJECT and
+    will be assigned to the Polarion user ID provided by USER.
+
+    Other test case importer options can be set by the various options this
+    command accepts. Check their help for more information.
+    """
+    testcases = testimony.get_testcases([source_code_path]).values()
+    import pdb
+    pdb.set_trace()
+    for test in testcases:
+        # Fetch the test case id if the @Id tag is present otherwise generate a
+        # test_case_id based on the test Python import path
+        test_case_id = test.tokens.get('id', generate_test_id(test))
+        if test.docstring:
+            if not type(test.docstring) == unicode:
+                test.docstring = test.docstring.decode('utf8')
+
+        # Is the test automated? Acceptable values are:
+        # automated, manualonly, and notautomated
+        auto_status = test.tokens.get(
+            'caseautomation',
+            'notautomated' if test.tokens.get('status') else 'automated'
+        ).lower()
+        caseposneg = test.tokens.get(
+            'caseposneg',
+            'negative' if 'negative' in test.name else 'positive'
+        ).lower()
+        subtype1 = test.tokens.get(
+            'subtype1',
+            '-'
+        ).lower()
+        casecomponent = test.tokens.get('casecomponent', '-').lower()
+        caseimportance = test.tokens.get(
+            'caseimportance', 'medium').lower()
+        caselevel = test.tokens.get('caselevel', 'component').lower()
+        description = test.tokens.get(
+            'description', test.docstring if test.docstring else '')
+        description = RST_PARSER.parse(description)
+        setup = test.tokens.get('setup')
+        status = test.tokens.get('status', 'approved').lower()
+        testtype = test.tokens.get(
+            'testtype',
+            'functional'
+        ).lower()
+        title = test.tokens.get('title', test.name)
+        upstream = test.tokens.get('upstream', 'no').lower()
+        steps = test.tokens.get('steps')
+        expectedresults = test.tokens.get('expectedresults')
+
+        if steps and expectedresults:
+            test_steps = generate_test_steps(
+                map_steps(steps, expectedresults))
+        else:
+            test_steps = None
+
+        results = []
+        if not collect_only:
+            results = TestCase.query(
+                test_case_id,
+                fields=[
+                    'caseautomation',
+                    'caseposneg',
+                    'description',
+                    'work_item_id'
+                ]
+            )
+        requirement_name = test.tokens.get(
+            'requirement', parse_requirement_name(path))
+        if len(results) == 0:
+            click.echo(
+                'Creating test case {0} for requirement: {1}.'
+                .format(title, requirement_name)
+            )
+            if not collect_only:
+                test_case = TestCase.create(
+                    project,
+                    title,
+                    description,
+                    caseautomation=auto_status,
+                    casecomponent=casecomponent,
+                    caseimportance=caseimportance,
+                    caselevel=caselevel,
+                    caseposneg=caseposneg,
+                    setup=setup,
+                    subtype1=subtype1,
+                    test_case_id=test_case_id,
+                    testtype=testtype,
+                    upstream=upstream,
+                )
+                test_case.status = status
+                if test_steps:
+                    test_case.test_steps = test_steps
+                test_case.update()
+            click.echo(
+                'Linking test case {0} to requirement: {1}.'
+                .format(title, requirement_name)
+            )
+            if not collect_only:
+                requirement = fetch_requirement(
+                    requirement_name, project, collect_only)
+                test_case.add_linked_item(
+                    requirement.work_item_id, 'verifies')
+    testcases = ElementTree.Element('testcases')
+    testcases.set('project-id', project)
+    testcases.set('user-id', user)
+
+    et = ElementTree.ElementTree(testcases)
+    et.write(output_path, encoding='utf-8', xml_declaration=True)
+
+
 @cli.command('xml-test-run')
 @click.option(
     '--custom-fields',
