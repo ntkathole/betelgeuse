@@ -836,6 +836,107 @@ def create_xml_property(name, value):
     return element
 
 
+def create_xml_testcase(testcase):
+    """Create an XML testcase element.
+
+    The element will be in the format to be used by the XML test case importer.
+    """
+    element = ElementTree.Element('testcase')
+    element.set('id', testcase.tokens.pop('id', generate_test_id(testcase)))
+    # TODO: set other attributes assignee-id, due-date, initial-estimate
+    if testcase.docstring:
+        if not type(testcase.docstring) == unicode:
+            testcase.docstring = testcase.docstring.decode('utf8')
+
+    if 'test' in testcase.tokens:
+        testcase.tokens['title'] = testcase.tokens.pop(
+            'test', testcase.tokens.get('title'))
+    if 'assert' in testcase.tokens:
+        testcase.tokens['expectedresults'] = testcase.tokens.pop(
+            'assert', testcase.tokens.get('expectedresults'))
+    if 'title' in testcase.tokens:
+        title = ElementTree.Element('title')
+        title.text = testcase.tokens.pop('title')
+        element.append(title)
+    if 'description' in testcase.tokens:
+        testcase.tokens['description'] = testcase.tokens.get(
+            'description',
+            testcase.docstring if testcase.docstring else ''
+        )
+        testcase.tokens['description'] = RST_PARSER.parse(
+            testcase.tokens['description'])
+        description = ElementTree.Element('description')
+        description.text = testcase.tokens.pop('description')
+        element.append(description)
+
+    linked_work_items = ElementTree.Element('linked-work-items')
+    if 'requirement' in testcase.tokens:
+        linked_work_item = ElementTree.Element('linked-work-item')
+        linked_work_item.set('workitem-id', testcase.tokens.pop('requirement'))
+        linked_work_item.set('role-id', 'verifies')
+        linked_work_items.append(linked_work_item)
+    element.append(linked_work_items)
+
+    steps = testcase.tokens.pop('steps', None)
+    expectedresults = testcase.tokens.pop('expectedresults', None)
+
+    if steps and expectedresults:
+        test_steps = ElementTree.Element('test-steps')
+        for step, expectedresult in map_steps(steps, expectedresults):
+            test_step = ElementTree.Element('test-step')
+            test_step_column = ElementTree.Element('test-step-column')
+            test_step_column.set('id', 'step')
+            test_step_column.text = step
+            test_step.append(test_step_column)
+            test_step_column = ElementTree.Element('test-step-column')
+            test_step_column.set('id', 'expectedResult')
+            test_step_column.text = expectedresult
+            test_step.append(test_step_column)
+            test_steps.append(test_step)
+        element.append(test_steps)
+
+    custom_fields = ElementTree.Element('custom-fields')
+
+    testcase.tokens['caseautomation'] = testcase.tokens.pop(
+        'caseautomation',
+        'notautomated' if testcase.tokens.pop('status', None) else 'automated'
+    ).lower()
+    testcase.tokens['caseposneg'] = testcase.tokens.pop(
+        'caseposneg',
+        'negative' if 'negative' in testcase.name else 'positive'
+    ).lower()
+    testcase.tokens['subtype1'] = testcase.tokens.pop(
+        'subtype1',
+        '-'
+    ).lower()
+    testcase.tokens['casecomponent'] = testcase.tokens.pop(
+        'casecomponent', '-').lower()
+    testcase.tokens['caseimportance'] = testcase.tokens.pop(
+        'caseimportance', 'medium').lower()
+    testcase.tokens['caselevel'] = testcase.tokens.pop(
+        'caselevel', 'component').lower()
+    testcase.tokens['setup'] = testcase.tokens.pop('setup', None)
+    testcase.tokens['testtype'] = testcase.tokens.pop(
+        'testtype',
+        'functional'
+    ).lower()
+    testcase.tokens['title'] = testcase.tokens.pop('title', testcase.name)
+    testcase.tokens['upstream'] = testcase.tokens.pop('upstream', 'no').lower()
+
+    testcase.tokens.pop('title', None)
+    testcase.tokens.pop('status', None)
+
+    for key, value in testcase.tokens.items():
+        if value is None:
+            continue
+        custom_field = ElementTree.Element('custom-field')
+        custom_field.set('id', key)
+        custom_field.set('content', value)
+        custom_fields.append(custom_field)
+    element.append(custom_fields)
+    return element
+
+
 @cli.command('xml-test-case')
 @click.option(
     '--dry-run',
@@ -861,13 +962,12 @@ def create_xml_property(name, value):
     'The format is "--response-property property_key=property_value".',
 )
 @click.argument('source-code-path', type=click.Path(exists=True))
-@click.argument('user')
 @click.argument('project')
 @click.argument('output-path')
 @click.pass_context
 def xml_test_case(
         context, dry_run, lookup_method, response_property, source_code_path,
-        user, project, output_path):
+        project, output_path):
     """Generate an XML suited to be importer by the test-case importer.
 
     This will read the source code at SOURCE_CODE_PATH in order to capture the
@@ -880,108 +980,35 @@ def xml_test_case(
     Other test case importer options can be set by the various options this
     command accepts. Check their help for more information.
     """
-    testcases = testimony.get_testcases([source_code_path]).values()
-    import pdb
-    pdb.set_trace()
-    for test in testcases:
-        # Fetch the test case id if the @Id tag is present otherwise generate a
-        # test_case_id based on the test Python import path
-        test_case_id = test.tokens.get('id', generate_test_id(test))
-        if test.docstring:
-            if not type(test.docstring) == unicode:
-                test.docstring = test.docstring.decode('utf8')
-
-        # Is the test automated? Acceptable values are:
-        # automated, manualonly, and notautomated
-        auto_status = test.tokens.get(
-            'caseautomation',
-            'notautomated' if test.tokens.get('status') else 'automated'
-        ).lower()
-        caseposneg = test.tokens.get(
-            'caseposneg',
-            'negative' if 'negative' in test.name else 'positive'
-        ).lower()
-        subtype1 = test.tokens.get(
-            'subtype1',
-            '-'
-        ).lower()
-        casecomponent = test.tokens.get('casecomponent', '-').lower()
-        caseimportance = test.tokens.get(
-            'caseimportance', 'medium').lower()
-        caselevel = test.tokens.get('caselevel', 'component').lower()
-        description = test.tokens.get(
-            'description', test.docstring if test.docstring else '')
-        description = RST_PARSER.parse(description)
-        setup = test.tokens.get('setup')
-        status = test.tokens.get('status', 'approved').lower()
-        testtype = test.tokens.get(
-            'testtype',
-            'functional'
-        ).lower()
-        title = test.tokens.get('title', test.name)
-        upstream = test.tokens.get('upstream', 'no').lower()
-        steps = test.tokens.get('steps')
-        expectedresults = test.tokens.get('expectedresults')
-
-        if steps and expectedresults:
-            test_steps = generate_test_steps(
-                map_steps(steps, expectedresults))
-        else:
-            test_steps = None
-
-        results = []
-        if not collect_only:
-            results = TestCase.query(
-                test_case_id,
-                fields=[
-                    'caseautomation',
-                    'caseposneg',
-                    'description',
-                    'work_item_id'
-                ]
-            )
-        requirement_name = test.tokens.get(
-            'requirement', parse_requirement_name(path))
-        if len(results) == 0:
-            click.echo(
-                'Creating test case {0} for requirement: {1}.'
-                .format(title, requirement_name)
-            )
-            if not collect_only:
-                test_case = TestCase.create(
-                    project,
-                    title,
-                    description,
-                    caseautomation=auto_status,
-                    casecomponent=casecomponent,
-                    caseimportance=caseimportance,
-                    caselevel=caselevel,
-                    caseposneg=caseposneg,
-                    setup=setup,
-                    subtype1=subtype1,
-                    test_case_id=test_case_id,
-                    testtype=testtype,
-                    upstream=upstream,
-                )
-                test_case.status = status
-                if test_steps:
-                    test_case.test_steps = test_steps
-                test_case.update()
-            click.echo(
-                'Linking test case {0} to requirement: {1}.'
-                .format(title, requirement_name)
-            )
-            if not collect_only:
-                requirement = fetch_requirement(
-                    requirement_name, project, collect_only)
-                test_case.add_linked_item(
-                    requirement.work_item_id, 'verifies')
     testcases = ElementTree.Element('testcases')
     testcases.set('project-id', project)
-    testcases.set('user-id', user)
+    if response_property:
+        response_properties = ElementTree.Element('response-properties')
+        element = ElementTree.Element('response-property')
+        element.set('name', response_property[0])
+        element.set('value', response_property[1])
+        response_properties.append(element)
+        testcases.append(response_properties)
+    properties = ElementTree.Element('properties')
+    properties.append(create_xml_property(
+        'dry-run', 'true' if dry_run else 'false'))
+    properties.append(create_xml_property(
+        'lookup-method', lookup_method))
+    testcases.append(properties)
+
+    source_testcases = itertools.chain(
+        *testimony.get_testcases([source_code_path]).values())
+    for testcase in source_testcases:
+        testcases.append(create_xml_testcase(testcase))
 
     et = ElementTree.ElementTree(testcases)
     et.write(output_path, encoding='utf-8', xml_declaration=True)
+    # et.write(output_path)
+    # TODO remove
+    from xml.dom import minidom
+    pretty = minidom.parse(output_path).toprettyxml(indent='  ')
+    with open(output_path, 'w') as f:
+        f.write(pretty)
 
 
 @cli.command('xml-test-run')
