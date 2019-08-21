@@ -366,13 +366,12 @@ def test_test_run(cli_runner):
             return_value_testcases = []
             for test in testcases:
                 t = mock.MagicMock()
+                t.docstring = ''
                 t.name = test['name']
-                t.testmodule = test['testmodule']
                 t.parent_class = None
-                if test['name'] == 'test_passed_no_id':
-                    t.fields = {}
-                else:
-                    t.fields = {'id': str(id(t))}
+                t.testmodule = test['testmodule']
+                t.fields = {'id': str(id(t))}
+                t.junit_id = f'{test["testmodule"]}.{test["name"]}'
                 return_value_testcases.append(t)
 
             collector.collect_tests.return_value = {
@@ -398,11 +397,7 @@ def test_test_run(cli_runner):
                     'importer.xml'
                 ]
             )
-            assert result.exit_code == 0, result.output()
-            assert result.output.strip() == (
-                'Was not able to find the ID for {0}, setting it to {0}'
-                .format('foo1.test_passed_no_id')
-            )
+            assert result.exit_code == 0, result.output
             collector.collect_tests.assert_called_once_with('source.py', ())
             assert os.path.isfile('importer.xml')
             root = ElementTree.parse('importer.xml').getroot()
@@ -438,13 +433,9 @@ def test_test_run(cli_runner):
                 p = properties.findall('property')
                 assert len(p) == 1
                 p = p[0]
-                if testcase.attrib['name'] == 'test_passed_no_id':
-                    polarion_testcase_id = 'foo1.test_passed_no_id'
-                else:
-                    polarion_testcase_id = id(return_value_testcases[index])
                 assert p.attrib == {
                     'name': 'polarion-testcase-id',
-                    'value': str(polarion_testcase_id),
+                    'value': str(id(return_value_testcases[index])),
                 }
 
 
